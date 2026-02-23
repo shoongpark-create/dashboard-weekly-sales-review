@@ -918,6 +918,7 @@ def build_style_channel_store_period(
 def classify_product_type(item: object, category: object) -> str:
     item_text = str(item or "").strip().upper()
     category_text = str(category or "").strip()
+    category_code = category_text.upper()
 
     goods_item_codes = {
         "BG",
@@ -932,6 +933,8 @@ def classify_product_type(item: object, category: object) -> str:
     goods_keywords = ["용품", "잡화", "가방", "모자", "벨트", "양말", "슈즈"]
 
     if item_text in goods_item_codes:
+        return "용품"
+    if category_code in goods_item_codes:
         return "용품"
     if any(keyword in category_text for keyword in goods_keywords):
         return "용품"
@@ -2140,11 +2143,13 @@ def write_html_dashboard(
     function classifyProductType(item, category) {
       const itemText = String(item || "").trim().toUpperCase();
       const categoryText = String(category || "").trim();
+      const categoryCode = categoryText.toUpperCase();
 
       const goodsItemCodes = new Set(["BG", "CA", "GV", "SO", "SS", "SH", "SC", "ACC"]);
       const goodsKeywords = ["용품", "잡화", "가방", "모자", "벨트", "양말", "슈즈"];
 
       if (goodsItemCodes.has(itemText)) return "용품";
+      if (goodsItemCodes.has(categoryCode)) return "용품";
       if (goodsKeywords.some((keyword) => categoryText.includes(keyword))) return "용품";
       return "의류";
     }
@@ -2612,6 +2617,20 @@ def write_html_dashboard(
       const styleNameMap = buildStyleNameMap(factRows);
       const orderByBrandStyle = buildOrderByBrandStyle(factRows);
       const style26NewSet = buildStyle26NewSet(factRows);
+      const styleProductTypeMap = new Map();
+      factRows.forEach((row) => {
+        const styleNo = normalizeString(row.style_no);
+        if (!styleNo) return;
+        const key = makeKey(row, ["brand", "style_no", "category"]);
+        if (!styleProductTypeMap.has(key)) {
+          styleProductTypeMap.set(key, classifyProductType(row.item, row.category));
+        }
+      });
+
+      const resolveStyleProductType = (row) => {
+        const key = makeKey(row, ["brand", "style_no", "category"]);
+        return styleProductTypeMap.get(key) || classifyProductType(row.item, row.category);
+      };
 
       const brandRows = aggregateCompareRows(factRows, ["brand"]);
       const channelRows = aggregateCompareRows(factRows, ["brand", "channel", "channel_type"]);
@@ -2626,6 +2645,7 @@ def write_html_dashboard(
       )
         .map((row, index) => ({
           ...row,
+          product_type: resolveStyleProductType(row),
           is_26_new: style26NewSet.has(`${normalizeString(row.brand)}||${normalizeString(row.style_no)}`),
           rank_period_ty: index + 1,
         }))
@@ -2637,6 +2657,7 @@ def write_html_dashboard(
       )
         .map((row, index) => ({
           ...row,
+          product_type: resolveStyleProductType(row),
           is_26_new: style26NewSet.has(`${normalizeString(row.brand)}||${normalizeString(row.style_no)}`),
           rank_period_ty: index + 1,
         }))
@@ -3697,6 +3718,7 @@ def write_html_dashboard(
       const yearSelect = document.getElementById("topStyleYearFilter");
       const seasonSelect = document.getElementById("topStyleSeasonFilter");
       const categorySelect = document.getElementById("topStyleCategoryFilter");
+      const productTypeSelect = document.getElementById("itemProductTypeFilter");
       const scopeTagEl = document.getElementById("topStyleScopeTag");
 
       const normalize = (value) => String(value || "").trim();
@@ -3848,6 +3870,14 @@ def write_html_dashboard(
 
       const resolveScopedStyleRows = () => {
         const selectedCategory = categorySelect ? categorySelect.value || "ALL" : "ALL";
+        const selectedProductType = productTypeSelect
+          ? productTypeSelect.value || "ALL"
+          : "ALL";
+        const matchProductType = (row) => {
+          if (selectedProductType === "ALL") return true;
+          const resolvedType = row.product_type || classifyProductType(row.item, row.category);
+          return resolvedType === selectedProductType;
+        };
 
         if (!hasScopedRows || !yearSelect || !seasonSelect) {
           let fallback = [...styleRows];
@@ -3856,6 +3886,7 @@ def write_html_dashboard(
               (row) => normalize(row.category) === selectedCategory,
             );
           }
+          fallback = fallback.filter(matchProductType);
           return fallback;
         }
 
@@ -3866,7 +3897,7 @@ def write_html_dashboard(
           selectedSeason === "ALL" &&
           selectedCategory === "ALL"
         ) {
-          return [...styleRows];
+          return [...styleRows].filter(matchProductType);
         }
 
         let filtered = scopedRows;
@@ -3881,6 +3912,7 @@ def write_html_dashboard(
             (row) => normalize(row.category) === selectedCategory,
           );
         }
+        filtered = filtered.filter(matchProductType);
         return aggregateStyleRows(filtered);
       };
 
@@ -3890,6 +3922,9 @@ def write_html_dashboard(
         if (yearSelect.value !== "ALL") parts.push(`연도 ${yearSelect.value}`);
         if (seasonSelect.value !== "ALL") parts.push(`시즌 ${seasonSelect.value}`);
         if (categorySelect.value !== "ALL") parts.push(`카테고리 ${categorySelect.value}`);
+        if (productTypeSelect && productTypeSelect.value !== "ALL") {
+          parts.push(`상품구분 ${productTypeSelect.value}`);
+        }
         scopeTagEl.textContent = `스타일 필터: ${parts.length ? parts.join(" / ") : "전체"}`;
       };
 
@@ -5183,6 +5218,45 @@ def generate_mvp_outputs(latest_root: Path, output_dir: Path, top_n: int = 20) -
         fact,
         keys=["brand", "year", "season", "style_no", "style_name", "category"],
     )
+
+    style_type_lookup = (
+        fact[["brand", "style_no", "category", "item"]]
+        .dropna(subset=["brand", "style_no", "category"])
+        .copy()
+    )
+    style_type_lookup["product_type"] = style_type_lookup.apply(
+        lambda row: classify_product_type(row.get("item"), row.get("category")),
+        axis=1,
+    )
+    style_type_lookup = (
+        style_type_lookup.groupby(["brand", "style_no", "category"], dropna=False)[
+            "product_type"
+        ]
+        .agg(lambda values: "용품" if "용품" in set(values) else "의류")
+        .reset_index()
+    )
+
+    style_period = style_period.merge(
+        style_type_lookup,
+        on=["brand", "style_no", "category"],
+        how="left",
+    )
+    style_scope_period = style_scope_period.merge(
+        style_type_lookup,
+        on=["brand", "style_no", "category"],
+        how="left",
+    )
+    style_period["product_type"] = style_period["product_type"].fillna(
+        style_period["category"].apply(
+            lambda category: classify_product_type("", category)
+        )
+    )
+    style_scope_period["product_type"] = style_scope_period["product_type"].fillna(
+        style_scope_period["category"].apply(
+            lambda category: classify_product_type("", category)
+        )
+    )
+
     item_scope_period = build_item_scope_period(fact)
     season_period = build_season_period_compare(fact)
     category_detail_period = build_category_detail_period(fact)
