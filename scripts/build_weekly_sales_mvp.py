@@ -2173,6 +2173,10 @@ def write_html_dashboard(
       return String(value ?? "").trim();
     }
 
+    function normalizeBrand(value) {
+      return normalizeString(value).replace(/\s+/g, " ");
+    }
+
     function cleanNumeric(value) {
       if (value === null || value === undefined) return null;
       if (typeof value === "number") {
@@ -2888,7 +2892,7 @@ def write_html_dashboard(
 
     function setupBrandFilter() {
       const brands = Array.from(
-        new Set(dataset.brand.map((row) => normalizeString(row.brand)).filter(Boolean)),
+        new Set(dataset.brand.map((row) => normalizeBrand(row.brand)).filter(Boolean)),
       ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
       brandFilter.innerHTML = "";
 
@@ -2906,11 +2910,11 @@ def write_html_dashboard(
     }
 
     function filteredRows(rows) {
-      const selected = normalizeString(brandFilter.value);
+      const selected = normalizeBrand(brandFilter.value);
       if (!selected || selected === "ALL") {
         return rows;
       }
-      return rows.filter((row) => normalizeString(row.brand) === selected);
+      return rows.filter((row) => normalizeBrand(row.brand) === selected);
     }
 
     function normalizeDimensionLabel(dimensionKey, value) {
@@ -2958,8 +2962,10 @@ def write_html_dashboard(
 
       if (dimensionKey === "category") {
         const knownCategories = new Set(["TOP", "BOTTOM", "OUTER", "ACC"]);
-        const hasKnown = sorted.some((row) => knownCategories.has(row.label));
-        if (hasKnown) {
+        const hasKnownWithValue = sorted.some(
+          (row) => knownCategories.has(row.label) && ((Number(row.ty) || 0) !== 0 || (Number(row.ly) || 0) !== 0),
+        );
+        if (hasKnownWithValue) {
           sorted = sorted.filter((row) => row.label !== "Unknown");
         }
       }
@@ -3188,8 +3194,10 @@ def write_html_dashboard(
 
       if (dimensionKey === "category") {
         const knownCategories = new Set(["TOP", "BOTTOM", "OUTER", "ACC"]);
-        const hasKnown = materialized.some((row) => knownCategories.has(row.label));
-        if (hasKnown) {
+        const hasKnownWithValue = materialized.some(
+          (row) => knownCategories.has(row.label) && ((Number(row.ty) || 0) !== 0 || (Number(row.ly) || 0) !== 0),
+        );
+        if (hasKnownWithValue) {
           materialized = materialized.filter((row) => row.label !== "Unknown");
         }
       }
@@ -4190,10 +4198,10 @@ def write_html_dashboard(
 
     function renderStyleNoDrilldown(currentBrand) {
       const styleChannelRows = (dataset.style_channel_period || []).filter(
-        (row) => !currentBrand || row.brand === currentBrand,
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
       );
       const styleStoreRows = (dataset.style_store_period || []).filter(
-        (row) => !currentBrand || row.brand === currentBrand,
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
       );
 
       const yearSelect = document.getElementById("styleNoYearFilter");
@@ -4624,7 +4632,7 @@ def write_html_dashboard(
     }
 
     function renderStoreDeepDive(currentBrand) {
-      const rows = (dataset.store_deep_dive || []).filter((row) => !currentBrand || row.brand === currentBrand);
+      const rows = (dataset.store_deep_dive || []).filter((row) => !currentBrand || normalizeBrand(row.brand) === currentBrand);
       const lookup = document.getElementById("storeLookup");
       const storeSearch = document.getElementById("storeSearch");
       if (!lookup) return;
@@ -4696,7 +4704,7 @@ def write_html_dashboard(
         setText("storeAvgDisc", fmtPct(storeRow.discount_rate_ty));
         setText("storeMarginRate", fmtPct(storeRow.gross_margin_rate_ty));
 
-        const styleRows = (dataset.store_style || []).filter((r) => r.store_name === storeRow.store_name && (!currentBrand || r.brand === currentBrand));
+        const styleRows = (dataset.store_style || []).filter((r) => r.store_name === storeRow.store_name && (!currentBrand || normalizeBrand(r.brand) === currentBrand));
         const topStyles = [...styleRows]
           .sort((a, b) => (b.sales_period_ty || 0) - (a.sales_period_ty || 0))
           .slice(0, 10)
@@ -4715,7 +4723,7 @@ def write_html_dashboard(
           10,
         );
 
-        const categoryRows = (dataset.store_category_mix || []).filter((r) => r.store_name === storeRow.store_name && (!currentBrand || r.brand === currentBrand));
+        const categoryRows = (dataset.store_category_mix || []).filter((r) => r.store_name === storeRow.store_name && (!currentBrand || normalizeBrand(r.brand) === currentBrand));
 
         const topCategory = [...categoryRows]
           .sort((a, b) => (b.sales_period_ty || 0) - (a.sales_period_ty || 0))
@@ -4781,16 +4789,16 @@ def write_html_dashboard(
       const seasonKey = normalize(selectedSeason) || "ALL";
 
       const scopedStyleRows = (dataset.profitability_style_season || []).filter(
-        (row) => !currentBrand || row.brand === currentBrand,
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
       );
       const scopedCategoryRows = (dataset.profitability_category_season || []).filter(
-        (row) => !currentBrand || row.brand === currentBrand,
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
       );
       const baseStyleRows = (dataset.profitability_style || []).filter(
-        (row) => !currentBrand || row.brand === currentBrand,
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
       );
       const baseCategoryRows = (dataset.profitability_category || []).filter(
-        (row) => !currentBrand || row.brand === currentBrand,
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
       );
 
       const styleRows =
@@ -4910,7 +4918,7 @@ def write_html_dashboard(
 
     function renderSeasonSection(currentBrand, onSeasonChanged) {
       const seasonSelect = document.getElementById("seasonFilter");
-      const rows = (dataset.season || []).filter((row) => !currentBrand || row.brand === currentBrand);
+      const rows = (dataset.season || []).filter((row) => !currentBrand || normalizeBrand(row.brand) === currentBrand);
       if (!seasonSelect) return;
 
       const selected = seasonSelect.value || "ALL";
@@ -4971,9 +4979,9 @@ def write_html_dashboard(
       const styleSelect = document.getElementById("categoryStyleFilter");
       const bestStoreHint = document.getElementById("categoryItemBestStoreHint");
       const bestStoreTable = document.getElementById("categoryItemBestStoreTable");
-      const allRows = (dataset.category_detail || []).filter((row) => !currentBrand || row.brand === currentBrand);
-      const itemStoreRows = (dataset.item_store_period || []).filter((row) => !currentBrand || row.brand === currentBrand);
-      const styleStoreRows = (dataset.style_store_period || []).filter((row) => !currentBrand || row.brand === currentBrand);
+      const allRows = (dataset.category_detail || []).filter((row) => !currentBrand || normalizeBrand(row.brand) === currentBrand);
+      const itemStoreRows = (dataset.item_store_period || []).filter((row) => !currentBrand || normalizeBrand(row.brand) === currentBrand);
+      const styleStoreRows = (dataset.style_store_period || []).filter((row) => !currentBrand || normalizeBrand(row.brand) === currentBrand);
       if (!categorySelect || !itemSelect || !styleSearch || !styleSelect || !bestStoreHint || !bestStoreTable) return;
 
       const normalize = (value) => String(value || "").trim();
@@ -5231,7 +5239,7 @@ def write_html_dashboard(
       const selected = brandFilter.value || "ALL";
       const scope = selected === "ALL" ? "전체" : selected;
       scopeTag.textContent = `현재 범위: ${scope}`;
-      const currentBrand = selected === "ALL" ? "" : selected;
+      const currentBrand = selected === "ALL" ? "" : normalizeBrand(selected);
 
       const brandRows = filteredRows(dataset.brand);
       const channelRows = filteredRows(dataset.channel);
