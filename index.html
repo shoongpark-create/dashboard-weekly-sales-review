@@ -4,12 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Weekly Sales Dashboard</title>
-    <meta http-equiv="refresh" content="0; url=./Data/processed/latest/mvp/weekly_sales_mvp_dashboard.html" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      body {
+        background: #f4f7fb;
+      }
+
+      .dashboard-frame {
+        display: block;
+        width: 100%;
+        height: 100vh;
+        border: 0;
+      }
+    </style>
   </head>
   <body>
-    <p>
-      Redirecting to dashboard...
-      <a href="./Data/processed/latest/mvp/weekly_sales_mvp_dashboard.html">Open dashboard</a>
-    </p>
+    <iframe
+      class="dashboard-frame"
+      src="./Data/processed/latest/mvp/weekly_sales_mvp_dashboard.html"
+      title="Weekly Sales Dashboard"
+      loading="eager"
+    ></iframe>
   </body>
 </html>
