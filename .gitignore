@@ -1,0 +1,20 @@
+# OS / local
+.DS_Store
+
+# Local Netlify folder
+.netlify/
+
+# Python cache
+__pycache__/
+.pycache_local/
+
+# Local source workbook and watcher state
+Data/Weekly_Sales_Review_W6.xlsx
+Data/processed/.watch_state.json
+
+# Snapshot and mart artifacts are regenerated; keep only published MVP HTML
+Data/processed/history/
+Data/processed/latest/
+!Data/processed/latest/mvp/
+Data/processed/latest/mvp/*
+!Data/processed/latest/mvp/weekly_sales_mvp_dashboard.html
