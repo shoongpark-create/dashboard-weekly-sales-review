@@ -2887,7 +2887,9 @@ def write_html_dashboard(
     }
 
     function setupBrandFilter() {
-      const brands = Array.from(new Set(dataset.brand.map((row) => row.brand))).sort();
+      const brands = Array.from(
+        new Set(dataset.brand.map((row) => normalizeString(row.brand)).filter(Boolean)),
+      ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
       brandFilter.innerHTML = "";
 
       const allOpt = document.createElement("option");
@@ -2904,11 +2906,30 @@ def write_html_dashboard(
     }
 
     function filteredRows(rows) {
-      const selected = brandFilter.value;
+      const selected = normalizeString(brandFilter.value);
       if (!selected || selected === "ALL") {
         return rows;
       }
-      return rows.filter((row) => row.brand === selected);
+      return rows.filter((row) => normalizeString(row.brand) === selected);
+    }
+
+    function normalizeDimensionLabel(dimensionKey, value) {
+      const text = normalizeString(value);
+      if (!text || text === "-") return "Unknown";
+      if (dimensionKey === "category") {
+        const upper = text.toUpperCase();
+        const categoryMap = {
+          TOP: "TOP",
+          BOTTOM: "BOTTOM",
+          OUTER: "OUTER",
+          ACC: "ACC",
+          ACCESSORY: "ACC",
+          ACCESSORIES: "ACC",
+          GOODS: "ACC",
+        };
+        return categoryMap[upper] || upper;
+      }
+      return text;
     }
 
     function renderMixBars(containerId, rows, dimensionKey, limit = 12) {
@@ -2917,7 +2938,7 @@ def write_html_dashboard(
 
       const grouped = {};
       rows.forEach((row) => {
-        const key = row[dimensionKey] || "Unknown";
+        const key = normalizeDimensionLabel(dimensionKey, row[dimensionKey]);
         if (!grouped[key]) {
           grouped[key] = { ty: 0, ly: 0 };
         }
@@ -2925,7 +2946,7 @@ def write_html_dashboard(
         grouped[key].ly += Number(row.sales_period_ly) || 0;
       });
 
-      const sorted = Object.entries(grouped)
+      let sorted = Object.entries(grouped)
         .map(([label, value]) => ({
           label,
           ty: value.ty,
@@ -2934,6 +2955,14 @@ def write_html_dashboard(
         }))
         .sort((a, b) => b.ty - a.ty)
         .slice(0, limit);
+
+      if (dimensionKey === "category") {
+        const knownCategories = new Set(["TOP", "BOTTOM", "OUTER", "ACC"]);
+        const hasKnown = sorted.some((row) => knownCategories.has(row.label));
+        if (hasKnown) {
+          sorted = sorted.filter((row) => row.label !== "Unknown");
+        }
+      }
 
       if (!sorted.length) {
         container.innerHTML = "<div class='empty-note'>데이터 없음</div>";
@@ -3139,7 +3168,7 @@ def write_html_dashboard(
     function renderDimensionMixChart(rows, dimensionKey, canvasId, limit = 12) {
       const grouped = {};
       rows.forEach((row) => {
-        const key = row[dimensionKey] || "Unknown";
+        const key = normalizeDimensionLabel(dimensionKey, row[dimensionKey]);
         if (!grouped[key]) {
           grouped[key] = { ty: 0, ly: 0 };
         }
@@ -3147,7 +3176,7 @@ def write_html_dashboard(
         grouped[key].ly += Number(row.sales_period_ly) || 0;
       });
 
-      const materialized = Object.entries(grouped)
+      let materialized = Object.entries(grouped)
         .map(([label, value]) => ({
           label,
           ty: value.ty,
@@ -3156,6 +3185,14 @@ def write_html_dashboard(
         }))
         .sort((a, b) => b.ty - a.ty)
         .slice(0, limit);
+
+      if (dimensionKey === "category") {
+        const knownCategories = new Set(["TOP", "BOTTOM", "OUTER", "ACC"]);
+        const hasKnown = materialized.some((row) => knownCategories.has(row.label));
+        if (hasKnown) {
+          materialized = materialized.filter((row) => row.label !== "Unknown");
+        }
+      }
 
       const labels = materialized.map((r) => r.label);
       const tyValues = materialized.map((r) => r.ty);
@@ -3214,6 +3251,12 @@ def write_html_dashboard(
       const selectedYear = yearSelect ? yearSelect.value || "ALL" : "ALL";
       const selectedSeason = seasonSelect ? seasonSelect.value || "ALL" : "ALL";
       const selectedCategory = categorySelect ? categorySelect.value || "ALL" : "ALL";
+      const normalizeSeason = (value) => {
+        const text = normalizeString(value);
+        if (!text) return "";
+        const numeric = Number(text);
+        return Number.isFinite(numeric) ? String(numeric) : text;
+      };
 
       const segmentMixLegendEl = document.getElementById("segmentMixLegend");
 
@@ -3395,7 +3438,10 @@ def write_html_dashboard(
         scopedItemRows = scopedItemRows.filter((row) => normalize(row.year) === selectedYear);
       }
       if (selectedSeason !== "ALL") {
-        scopedItemRows = scopedItemRows.filter((row) => normalize(row.season) === selectedSeason);
+        const seasonToken = normalizeSeason(selectedSeason);
+        scopedItemRows = scopedItemRows.filter(
+          (row) => normalizeSeason(row.season) === seasonToken,
+        );
       }
       if (selectedCategory !== "ALL") {
         scopedItemRows = scopedItemRows.filter((row) => normalize(row.category) === selectedCategory);
@@ -3722,8 +3768,28 @@ def write_html_dashboard(
       const scopeTagEl = document.getElementById("topStyleScopeTag");
 
       const normalize = (value) => String(value || "").trim();
+      const normalizeSeason = (value) => {
+        const text = normalize(value);
+        if (!text) return "";
+        const numeric = Number(text);
+        return Number.isFinite(numeric) ? String(numeric) : text;
+      };
       const scopedRows = Array.isArray(styleScopeRows) ? styleScopeRows : [];
       const hasScopedRows = scopedRows.length > 0;
+      const styleFallbackByCode = new Map();
+
+      (Array.isArray(styleRows) ? styleRows : []).forEach((row) => {
+        const styleNo = normalize(row.style_no);
+        if (!styleNo || styleFallbackByCode.has(styleNo)) return;
+        styleFallbackByCode.set(styleNo, {
+          category: normalize(row.category),
+          wow_sales_pct: row.wow_sales_pct,
+          cumulative_sell_through_ty: row.cumulative_sell_through_ty,
+          season_sales_rate_ty: row.season_sales_rate_ty,
+          order_qty_total: row.order_qty_total,
+          qty_cum_ty: row.qty_cum_ty,
+        });
+      });
 
       const uniqueValues = (rows, key) =>
         Array.from(new Set(rows.map((row) => normalize(row[key])).filter(Boolean))).sort(
@@ -3773,6 +3839,41 @@ def write_html_dashboard(
           row.wow_sales_pct = safePct(row.wow_sales_diff, row.sales_period_prev_week_ty);
           row.season_sales_rate_ty = safePct(row.sales_cum_ty, row.tag_cum_ty);
           row.cumulative_sell_through_ty = safePct(row.qty_cum_ty, row.order_qty_total);
+
+          const fallback = styleFallbackByCode.get(normalize(row.style_no));
+          if (fallback) {
+            if ((!row.category || row.category === "-") && fallback.category) {
+              row.category = fallback.category;
+            }
+            if (isMissing(row.wow_sales_pct) && !isMissing(fallback.wow_sales_pct)) {
+              row.wow_sales_pct = fallback.wow_sales_pct;
+            }
+            if (
+              (isMissing(row.order_qty_total) || Number(row.order_qty_total) <= 0) &&
+              !isMissing(fallback.order_qty_total)
+            ) {
+              row.order_qty_total = Number(fallback.order_qty_total) || 0;
+            }
+            if (
+              (isMissing(row.qty_cum_ty) || Number(row.qty_cum_ty) <= 0) &&
+              !isMissing(fallback.qty_cum_ty)
+            ) {
+              row.qty_cum_ty = Number(fallback.qty_cum_ty) || 0;
+            }
+            if (
+              isMissing(row.cumulative_sell_through_ty) &&
+              !isMissing(fallback.cumulative_sell_through_ty)
+            ) {
+              row.cumulative_sell_through_ty = fallback.cumulative_sell_through_ty;
+            }
+            if (isMissing(row.season_sales_rate_ty) && !isMissing(fallback.season_sales_rate_ty)) {
+              row.season_sales_rate_ty = fallback.season_sales_rate_ty;
+            }
+          }
+
+          if (isMissing(row.cumulative_sell_through_ty)) {
+            row.cumulative_sell_through_ty = safePct(row.qty_cum_ty, row.order_qty_total);
+          }
           return row;
         });
       };
@@ -3818,14 +3919,19 @@ def write_html_dashboard(
           selectedYear === "ALL"
             ? scopedRows
             : scopedRows.filter((row) => normalize(row.year) === selectedYear);
-        const seasons = uniqueValues(seasonBase, "season");
+        const seasons = Array.from(
+          new Set(seasonBase.map((row) => normalizeSeason(row.season)).filter(Boolean)),
+        ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
         seasons.forEach((season) => {
           const opt = document.createElement("option");
           opt.value = season;
           opt.textContent = season;
           seasonSelect.appendChild(opt);
         });
-        seasonSelect.value = seasons.includes(currentSeason) ? currentSeason : "ALL";
+        const currentSeasonToken = normalizeSeason(currentSeason);
+        seasonSelect.value = seasons.includes(currentSeasonToken)
+          ? currentSeasonToken
+          : "ALL";
       };
 
       const populateCategories = (preferredCategory) => {
@@ -3855,7 +3961,10 @@ def write_html_dashboard(
           categoryBase = categoryBase.filter((row) => normalize(row.year) === selectedYear);
         }
         if (selectedSeason !== "ALL") {
-          categoryBase = categoryBase.filter((row) => normalize(row.season) === selectedSeason);
+          const seasonToken = normalizeSeason(selectedSeason);
+          categoryBase = categoryBase.filter(
+            (row) => normalizeSeason(row.season) === seasonToken,
+          );
         }
 
         const categories = uniqueValues(categoryBase, "category");
@@ -3905,7 +4014,8 @@ def write_html_dashboard(
           filtered = filtered.filter((row) => normalize(row.year) === selectedYear);
         }
         if (selectedSeason !== "ALL") {
-          filtered = filtered.filter((row) => normalize(row.season) === selectedSeason);
+          const seasonToken = normalizeSeason(selectedSeason);
+          filtered = filtered.filter((row) => normalizeSeason(row.season) === seasonToken);
         }
         if (selectedCategory !== "ALL") {
           filtered = filtered.filter(
@@ -3932,7 +4042,15 @@ def write_html_dashboard(
         const rankedSource = resolveScopedStyleRows().map((row) => {
           const qtyCum = Number(row.qty_cum_ty) || 0;
           const orderQty = Number(row.order_qty_total) || 0;
-          const cumulativeSellThrough = orderQty ? qtyCum / orderQty : null;
+          const fallbackCumulative = Number(row.cumulative_sell_through_ty);
+          const fallbackSeasonRate = Number(row.season_sales_rate_ty);
+          const cumulativeSellThrough = orderQty
+            ? qtyCum / orderQty
+            : Number.isFinite(fallbackCumulative)
+              ? fallbackCumulative
+              : Number.isFinite(fallbackSeasonRate)
+                ? fallbackSeasonRate
+                : null;
           return {
             ...row,
             cumulative_sell_through_ty: cumulativeSellThrough,
