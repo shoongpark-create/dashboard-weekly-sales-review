@@ -185,6 +185,42 @@ def _top_rows_per_brand(frame: pd.DataFrame, limit: int) -> pd.DataFrame:
     )
 
 
+def _cap_rows_per_brand(
+    frame: pd.DataFrame,
+    limit: int,
+    sort_candidates: list[str] | None = None,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    if limit <= 0:
+        return frame.head(0).reset_index(drop=True)
+    if "brand" not in frame.columns:
+        return frame.head(limit).reset_index(drop=True)
+
+    sort_candidates = sort_candidates or ["sales_period_ty", "qty_period_ty", "rank"]
+    sort_columns = [col for col in sort_candidates if col in frame.columns]
+
+    if not sort_columns:
+        return (
+            frame.groupby("brand", dropna=False, group_keys=False)
+            .head(limit)
+            .reset_index(drop=True)
+        )
+
+    out = frame.copy()
+    for col in sort_columns:
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
+
+    return (
+        out.sort_values(
+            ["brand", *sort_columns], ascending=[True, *([False] * len(sort_columns))]
+        )
+        .groupby("brand", dropna=False, group_keys=False)
+        .head(limit)
+        .reset_index(drop=True)
+    )
+
+
 def _safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     ratio = numerator.div(denominator)
     return ratio.where(denominator.ne(0), pd.NA)
@@ -5633,6 +5669,10 @@ def generate_mvp_outputs(latest_root: Path, output_dir: Path, top_n: int = 20) -
         channel_table=channel_decisions,
     )
 
+    style_channel_payload = _cap_rows_per_brand(style_channel_period, limit=2500)
+    style_store_payload = _cap_rows_per_brand(style_store_period, limit=3000)
+    store_style_payload = _cap_rows_per_brand(store_style_period, limit=4000)
+
     extra_data = {
         "style": style_period.to_dict(orient="records"),
         "style_scope": style_scope_period.to_dict(orient="records"),
@@ -5640,10 +5680,10 @@ def generate_mvp_outputs(latest_root: Path, output_dir: Path, top_n: int = 20) -
         "season": season_period.to_dict(orient="records"),
         "category_detail": category_detail_period.to_dict(orient="records"),
         "item_store_period": item_store_period.to_dict(orient="records"),
-        "style_channel_period": style_channel_period.to_dict(orient="records"),
-        "style_store_period": style_store_period.to_dict(orient="records"),
+        "style_channel_period": style_channel_payload.to_dict(orient="records"),
+        "style_store_period": style_store_payload.to_dict(orient="records"),
         "store_deep_dive": store_deep_dive.to_dict(orient="records"),
-        "store_style": store_style_period.to_dict(orient="records"),
+        "store_style": store_style_payload.to_dict(orient="records"),
         "store_category_mix": store_category_mix.to_dict(orient="records"),
         "segment_mix": segment_mix.to_dict(orient="records"),
         "product_mix": product_mix.to_dict(orient="records"),
@@ -5674,6 +5714,11 @@ def generate_mvp_outputs(latest_root: Path, output_dir: Path, top_n: int = 20) -
         "generated_at": generated_at,
         "source_latest_root": str(latest_root),
         "top_n": top_n,
+        "payload_limits": {
+            "style_channel_period_per_brand": 2500,
+            "style_store_period_per_brand": 3000,
+            "store_style_per_brand": 4000,
+        },
         "outputs": {
             "kpi_file": str(kpi_file),
             "brand_file": str(brand_file),
