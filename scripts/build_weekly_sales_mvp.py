@@ -226,6 +226,26 @@ def _safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
     return ratio.where(denominator.ne(0), pd.NA)
 
 
+def _align_ly_year_for_keys(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    if "year" not in keys:
+        return frame
+    if "year" not in frame.columns or "timeframe_code" not in frame.columns:
+        return frame
+
+    out = frame.copy()
+    ly_mask = out["timeframe_code"].isin(["period_ly", "cum_ly"])
+    if not ly_mask.any():
+        return out
+
+    year_raw = out.loc[ly_mask, "year"].astype("string")
+    year_num = pd.to_numeric(year_raw, errors="coerce")
+    year_shifted = (year_num + 1).astype("Int64").astype("string")
+    out.loc[ly_mask, "year"] = year_shifted.where(year_num.notna(), year_raw)
+    return out
+
+
 def _pivot_timeframe(
     frame: pd.DataFrame,
     keys: list[str],
@@ -341,6 +361,9 @@ def build_style_period_compare(
         for key in ["year", "new_old"]:
             if key in frame.columns:
                 frame[key] = frame[key].fillna("").astype(str).str.strip()
+
+    scope = _align_ly_year_for_keys(scope, keys)
+    cumulative_scope = _align_ly_year_for_keys(cumulative_scope, keys)
 
     sales = _pivot_timeframe(
         scope, keys, "sales_amt_net_v_excl", "sales", PERIOD_COMPARE_CODES
@@ -726,6 +749,8 @@ def build_item_scope_period(fact: pd.DataFrame) -> pd.DataFrame:
         if key in scope.columns:
             scope[key] = scope[key].fillna("").astype(str).str.strip()
 
+    scope = _align_ly_year_for_keys(scope, keys)
+
     sales = _pivot_timeframe(
         scope, keys, "sales_amt_net_v_excl", "sales", PERIOD_COMPARE_CODES
     )
@@ -786,6 +811,9 @@ def build_style_channel_store_period(
         "store_name",
         "channel",
     ]
+
+    scope = _align_ly_year_for_keys(scope, channel_keys)
+    cumulative_scope = _align_ly_year_for_keys(cumulative_scope, channel_keys)
 
     style_name_map = (
         scope.loc[
@@ -1890,6 +1918,15 @@ def write_html_dashboard(
     </article>
   </section>
 
+  <section class="panel table-section">
+    <div class="panel-head">
+      <h2>연도/시즌 TY-LY 매출/비중/성장율</h2>
+      <span class="unit-ref">단위: 금액 백만원 | 비중 %</span>
+    </div>
+    <div class="tag" id="itemSalesScopeTag">전체 매출 대비 연도/시즌 비중</div>
+    <div class="chart-box"><canvas id="chartItemSalesShare"></canvas></div>
+  </section>
+
   <section class="table-grid table-section top-style-insight-grid">
     <article class="panel top-style-filter-panel">
       <div class="control-row">
@@ -2166,6 +2203,10 @@ def write_html_dashboard(
       if (isMissing(value)) return "-";
       return `${(value * 100).toFixed(1)}%`;
     };
+    const fmtPctPointPlain = (value) => {
+      if (isMissing(value)) return "-";
+      return `${(value * 100).toFixed(1)}%p`;
+    };
     const pctWidth = (value, max) => max <= 0 ? 0 : Math.max(0, Math.min(100, (value / max) * 100));
     const safePct = (num, den) => den ? num / den : null;
 
@@ -2302,9 +2343,17 @@ def write_html_dashboard(
         const isCum = CUMULATIVE_COMPARE_CODES.includes(code);
         if (!isPeriod && !isCum) return;
 
-        const rowKey = makeKey(row, keys);
+        const rowForKey = { ...row };
+        if (keys.includes("year") && ["period_ly", "cum_ly"].includes(code)) {
+          const parsedYear = Number(normalizeString(row.year));
+          if (Number.isFinite(parsedYear)) {
+            rowForKey.year = String(Math.trunc(parsedYear) + 1);
+          }
+        }
+
+        const rowKey = makeKey(rowForKey, keys);
         if (!map.has(rowKey)) {
-          map.set(rowKey, initMetricRow(row, keys));
+          map.set(rowKey, initMetricRow(rowForKey, keys));
         }
         const target = map.get(rowKey);
 
@@ -3476,26 +3525,28 @@ def write_html_dashboard(
 
       const normalize = (value) => String(value || "").trim();
       const scopedSource = Array.isArray(itemScopeRows) && itemScopeRows.length ? itemScopeRows : itemRows;
-      let scopedItemRows = [...scopedSource];
+      let scopedRowsNoYear = [...scopedSource];
 
-      if (selectedYear !== "ALL") {
-        scopedItemRows = scopedItemRows.filter((row) => normalize(row.year) === selectedYear);
-      }
       if (selectedSeason !== "ALL") {
         const seasonToken = normalizeSeason(selectedSeason);
-        scopedItemRows = scopedItemRows.filter(
+        scopedRowsNoYear = scopedRowsNoYear.filter(
           (row) => normalizeSeason(row.season) === seasonToken,
         );
       }
       if (selectedCategory !== "ALL") {
-        scopedItemRows = scopedItemRows.filter((row) => normalize(row.category) === selectedCategory);
+        scopedRowsNoYear = scopedRowsNoYear.filter((row) => normalize(row.category) === selectedCategory);
       }
       if (selectedProductType !== "ALL") {
-        scopedItemRows = scopedItemRows.filter((row) => {
+        scopedRowsNoYear = scopedRowsNoYear.filter((row) => {
           const productType = row.product_type || classifyProductType(row.item, row.category);
           return productType === selectedProductType;
         });
       }
+
+      let scopedItemRows =
+        selectedYear !== "ALL"
+          ? scopedRowsNoYear.filter((row) => normalize(row.year) === selectedYear)
+          : [...scopedRowsNoYear];
 
       const itemMap = {};
       scopedItemRows.forEach((row) => {
@@ -3507,6 +3558,44 @@ def write_html_dashboard(
       const itemMaterialized = Object.entries(itemMap)
         .map(([item, v]) => ({ item, ty: v.ty, ly: v.ly, yoy: v.ly ? (v.ty - v.ly) / v.ly : null }))
         .sort((a, b) => b.ty - a.ty);
+
+      if (selectedYear !== "ALL") {
+        const lyTotal = itemMaterialized.reduce((acc, row) => acc + (Number(row.ly) || 0), 0);
+        const numericYear = Number(selectedYear);
+        const prevYearToken = Number.isFinite(numericYear)
+          ? String(numericYear - 1)
+          : "";
+
+        if (lyTotal <= 0 && prevYearToken) {
+          const tyRows = scopedRowsNoYear.filter((row) => normalize(row.year) === selectedYear);
+          const lyRows = scopedRowsNoYear.filter((row) => normalize(row.year) === prevYearToken);
+
+          if (tyRows.length && lyRows.length) {
+            const fallbackMap = {};
+            tyRows.forEach((row) => {
+              const key = String(row.item || "Unknown");
+              if (!fallbackMap[key]) fallbackMap[key] = { ty: 0, ly: 0 };
+              fallbackMap[key].ty += Number(row.sales_period_ty) || 0;
+            });
+            lyRows.forEach((row) => {
+              const key = String(row.item || "Unknown");
+              if (!fallbackMap[key]) fallbackMap[key] = { ty: 0, ly: 0 };
+              fallbackMap[key].ly += Number(row.sales_period_ty) || 0;
+            });
+
+            const recovered = Object.entries(fallbackMap)
+              .map(([item, v]) => ({ item, ty: v.ty, ly: v.ly, yoy: v.ly ? (v.ty - v.ly) / v.ly : null }))
+              .sort((a, b) => b.ty - a.ty);
+            const recoveredLyTotal = recovered.reduce((acc, row) => acc + (Number(row.ly) || 0), 0);
+            if (recoveredLyTotal > 0) {
+              console.warn(
+                `[item-yoy] LY recovered from previous-year TY fallback (${selectedYear} -> ${prevYearToken})`,
+              );
+              itemMaterialized.splice(0, itemMaterialized.length, ...recovered);
+            }
+          }
+        }
+      }
 
       upsertChart("chartItemYoYCompare", {
         type: "bar",
@@ -4232,6 +4321,271 @@ def write_html_dashboard(
       drawStyleTables();
     }
 
+    function renderItemSalesShareSection(currentBrand) {
+      const seasonRows = (dataset.season || []).filter(
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
+      );
+      const itemScopeRows = (dataset.item_scope || []).filter(
+        (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
+      );
+      const scopeTagEl = document.getElementById("itemSalesScopeTag");
+      if (!scopeTagEl) return;
+
+      const normalize = (value) => String(value || "").trim();
+      const parseYear = (value) => {
+        const token = normalize(value);
+        const matched = token.match(/([0-9]{2})/);
+        return matched ? Number(matched[1]) : Number.NaN;
+      };
+
+      const parseSeason = (value) => {
+        const token = normalize(value);
+        const numeric = Number(token);
+        return Number.isFinite(numeric) ? numeric : Number.NaN;
+      };
+
+      const halfOrder = (value) => {
+        const token = normalize(value).toUpperCase();
+        if (token === "SS") return 0;
+        if (token === "FW") return 1;
+        return 9;
+      };
+
+      const formatSeasonMetaKey = (yearNum, season) => `${yearNum}||${season}`;
+      const formatBucketKey = (yearNum, seasonHalf, season) => `${yearNum}||${seasonHalf}||${season}`;
+      const buildLabel = (yearNum, seasonHalf, season) => {
+        const yy = String(yearNum).padStart(2, "0");
+        if (seasonHalf) {
+          return `${yy}${seasonHalf}-${season}`;
+        }
+        return `${yy}-${season}`;
+      };
+
+      const seasonMetaMap = new Map();
+      seasonRows.forEach((row) => {
+        const yearNum = parseYear(normalize(row.year_season) || normalize(row.year));
+        const season = normalize(row.season);
+        const seasonHalf = normalize(row.season_half).toUpperCase();
+        if (!Number.isFinite(yearNum) || !season) {
+          return;
+        }
+        const key = formatSeasonMetaKey(yearNum, season);
+        if (!seasonMetaMap.has(key)) {
+          seasonMetaMap.set(key, { season_half: seasonHalf });
+        }
+      });
+
+      const bucketMap = new Map();
+      if (itemScopeRows.length) {
+        itemScopeRows.forEach((row) => {
+          const yearNum = parseYear(normalize(row.year));
+          const season = normalize(row.season);
+          if (!Number.isFinite(yearNum) || !season) {
+            return;
+          }
+
+          const seasonMeta = seasonMetaMap.get(formatSeasonMetaKey(yearNum, season));
+          const seasonHalf = normalize(seasonMeta?.season_half).toUpperCase();
+          const key = formatBucketKey(yearNum, seasonHalf, season);
+          if (!bucketMap.has(key)) {
+            bucketMap.set(key, {
+              year_num: yearNum,
+              season_half: seasonHalf,
+              season,
+              sales_period_ty: 0,
+              sales_period_ly: 0,
+            });
+          }
+
+          const target = bucketMap.get(key);
+          target.sales_period_ty += Number(row.sales_period_ty) || 0;
+          target.sales_period_ly += Number(row.sales_period_ly) || 0;
+        });
+      } else {
+        seasonRows.forEach((row) => {
+          const yearNum = parseYear(normalize(row.year_season) || normalize(row.year));
+          const season = normalize(row.season);
+          const seasonHalf = normalize(row.season_half).toUpperCase();
+          if (!Number.isFinite(yearNum) || !season) {
+            return;
+          }
+
+          const key = formatBucketKey(yearNum, seasonHalf, season);
+          if (!bucketMap.has(key)) {
+            bucketMap.set(key, {
+              year_num: yearNum,
+              season_half: seasonHalf,
+              season,
+              sales_period_ty: 0,
+              sales_period_ly: 0,
+            });
+          }
+
+          const target = bucketMap.get(key);
+          target.sales_period_ty += Number(row.sales_period_ty) || 0;
+          target.sales_period_ly += Number(row.sales_period_ly) || 0;
+        });
+      }
+
+      const allBuckets = Array.from(bucketMap.values());
+      const totalTySales = allBuckets.reduce(
+        (acc, row) => acc + (Number(row.sales_period_ty) || 0),
+        0,
+      );
+      const totalLySales = allBuckets.reduce(
+        (acc, row) => acc + (Number(row.sales_period_ly) || 0),
+        0,
+      );
+
+      if (!allBuckets.length || totalTySales <= 0) {
+        scopeTagEl.textContent = "1:1 매칭 가능한 전년 데이터가 없습니다.";
+        upsertChart("chartItemSalesShare", {
+          type: "bar",
+          data: { labels: [], datasets: [] },
+          options: { responsive: true, maintainAspectRatio: false },
+        });
+        return;
+      }
+
+      const pairedRows = allBuckets
+        .map((row) => {
+          const tyAmount = Number(row.sales_period_ty) || 0;
+          const lyAmount = Number(row.sales_period_ly) || 0;
+          const tyShare = totalTySales ? tyAmount / totalTySales : null;
+          const lyShare = totalLySales ? lyAmount / totalLySales : null;
+          const growthRate = lyAmount > 0 ? (tyAmount - lyAmount) / lyAmount : null;
+
+          return {
+            year_num: row.year_num,
+            season_half: row.season_half,
+            season: row.season,
+            ty_label: buildLabel(row.year_num, row.season_half, row.season),
+            ly_label: buildLabel(row.year_num - 1, row.season_half, row.season),
+            ty_amount: tyAmount,
+            ly_amount: lyAmount,
+            ty_share: tyShare,
+            ly_share: lyShare,
+            growth_rate: growthRate,
+          };
+        })
+        .sort((a, b) => {
+          const seasonDiff = parseSeason(a.season) - parseSeason(b.season);
+          if (Number.isFinite(seasonDiff) && seasonDiff !== 0) return seasonDiff;
+
+          const halfDiff = halfOrder(a.season_half) - halfOrder(b.season_half);
+          if (halfDiff !== 0) return halfDiff;
+
+          const yearDiff = Number(b.year_num) - Number(a.year_num);
+          if (Number.isFinite(yearDiff) && yearDiff !== 0) return yearDiff;
+
+          return a.ty_label.localeCompare(b.ty_label, undefined, { numeric: true });
+        });
+
+      const chartRows = pairedRows.filter((row) => {
+        if ((row.ty_amount || 0) <= 0 || (row.ly_amount || 0) <= 0) {
+          return false;
+        }
+        const tyShare = Number(row.ty_share) || 0;
+        return tyShare >= 0.01;
+      });
+
+      const labels = chartRows.map((row) => row.ty_label);
+      const tySalesValues = chartRows.map((row) => row.ty_amount);
+      const lySalesValues = chartRows.map((row) => row.ly_amount);
+      const tyShareValues = chartRows.map((row) => row.ty_share);
+      const lyShareValues = chartRows.map((row) => row.ly_share);
+      const growthValues = chartRows.map((row) => row.growth_rate);
+
+      scopeTagEl.textContent = `TY시트 ${chartRows.length}개 시즌 vs LY시트 1:1 매칭 | TY ${fmtShortAmount(totalTySales)} / LY ${fmtShortAmount(totalLySales)} (TY 1% 미만 제외)`;
+
+      upsertChart("chartItemSalesShare", {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            {
+              label: "TY 매출",
+              data: tySalesValues,
+              backgroundColor: "#1f8f9f",
+              borderRadius: 6,
+            },
+            {
+              label: "LY 매출",
+              data: lySalesValues,
+              backgroundColor: "#7f8ea3",
+              borderRadius: 6,
+            },
+            {
+              type: "line",
+              label: "성장율",
+              data: growthValues,
+              yAxisID: "y1",
+              borderColor: "#2a9d8f",
+              backgroundColor: "#2a9d8f",
+              tension: 0.3,
+              pointRadius: 2,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: "index",
+            intersect: false,
+          },
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  title: (items) => {
+                    const idx = Number(items?.[0]?.dataIndex) || 0;
+                    const row = chartRows[idx];
+                    if (!row) return "";
+                    return `${row.ty_label} vs ${row.ly_label}`;
+                  },
+                  label: (ctx) => {
+                    if (ctx.dataset.label === "성장율") {
+                      const idx = Number(ctx.dataIndex) || 0;
+                      const shareDelta =
+                        idx >= 0
+                          ? (Number(tyShareValues[idx]) || 0) - (Number(lyShareValues[idx]) || 0)
+                          : null;
+                      return `${ctx.dataset.label}: ${fmtPct(ctx.raw)} | 비중변화 ${fmtPctPointPlain(shareDelta)}`;
+                    }
+
+                    const amount = Number(ctx.raw) || 0;
+                    const idx = Number(ctx.dataIndex) || 0;
+                    const share =
+                      idx >= 0
+                        ? (ctx.dataset.label === "TY 매출" ? tyShareValues[idx] : lyShareValues[idx])
+                        : null;
+                    return `${ctx.dataset.label}: ${fmtShortAmount(amount)} (매출비중 ${fmtPctPlain(share)})`;
+                  },
+                },
+              },
+            },
+          scales: {
+            x: {
+              ticks: {
+                autoSkip: true,
+                maxRotation: 35,
+                minRotation: 20,
+              },
+            },
+            y: {
+              beginAtZero: true,
+              ticks: { callback: (value) => fmtShortAmount(value) },
+            },
+            y1: {
+              position: "right",
+              grid: { drawOnChartArea: false },
+              ticks: { callback: (value) => fmtPctPlain(Number(value)) },
+            },
+          },
+        },
+      });
+    }
+
     function renderStyleNoDrilldown(currentBrand) {
       const styleChannelRows = (dataset.style_channel_period || []).filter(
         (row) => !currentBrand || normalizeBrand(row.brand) === currentBrand,
@@ -4445,6 +4799,7 @@ def write_html_dashboard(
         const selectedStyleNo = normalize(lookup.value);
         const scopedRows = filterByScope(allRows);
         const scopedStyleMap = createStyleMap(scopedRows);
+        const selectedStyle = scopedStyleMap.get(selectedStyleNo);
         const scopedLabel = scopeSummary();
 
         if (!selectedStyleNo) {
@@ -4464,7 +4819,6 @@ def write_html_dashboard(
           return;
         }
 
-        const selectedStyle = scopedStyleMap.get(selectedStyleNo);
         scopeTagEl.textContent = selectedStyle?.style_name
           ? `${selectedStyleNo} / ${selectedStyle.style_name} (${scopedLabel})`
           : `${selectedStyleNo} (${scopedLabel})`;
@@ -4560,6 +4914,7 @@ def write_html_dashboard(
       const storeSearch = document.getElementById("storeSearch");
       const styleNoLookup = document.getElementById("styleNoLookup");
       const styleNoSearch = document.getElementById("styleNoSearch");
+      const itemSalesScopeTag = document.getElementById("itemSalesScopeTag");
       const topStyleYearFilter = document.getElementById("topStyleYearFilter");
       const topStyleSeasonFilter = document.getElementById("topStyleSeasonFilter");
       const topStyleCategoryFilter = document.getElementById("topStyleCategoryFilter");
@@ -4593,6 +4948,10 @@ def write_html_dashboard(
 
       if (styleNoSearch) {
         styleNoSearch.value = "";
+      }
+
+      if (itemSalesScopeTag) {
+        itemSalesScopeTag.textContent = "전체 매출 대비 연도/시즌 비중";
       }
 
       if (topStyleYearFilter) {
@@ -5299,6 +5658,7 @@ def write_html_dashboard(
         styleScopeRows,
         () => renderSegmentMixAndItemYoY(segmentRows, itemRows, itemScopeRows),
       );
+      renderItemSalesShareSection(currentBrand);
       renderStyleNoDrilldown(currentBrand);
       renderStoreDeepDive(currentBrand);
       renderSeasonSection(currentBrand, (seasonValue) => {
